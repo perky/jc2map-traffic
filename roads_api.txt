@@ -1,0 +1,44 @@
+TraverseType.Bidirectional
+TraverseType.OneWayForward
+TraverseType.OneWayBackward
+
+RoadType.Normal
+RoadType.WaterPatrol
+RoadType.GroundRoam
+RoadType.GroundPatrol
+RoadType.AirPatrol
+RoadType.WaterRoam
+RoadType.Railway
+RoadType.AirTaxi
+RoadType.Spline
+
+SpeedLimit.Default
+SpeedLimit.City
+SpeedLimit.RuralSlow
+SpeedLimit.RuralFast
+SpeedLimit.Highway
+
+function Roads:FindRoadPath(start: Vector3, end: Vector3, callback: (args: {success: boolean, edges: Edge}) -> ())
+function Roads:GetRoadById(road_id: string): Road
+function Roads:GetEdgeByPosition(position: Vector3, max_distance: number): Edge
+function Roads:GetConnectedEdges(node_index: number): Edge[]
+
+type Road
+{
+  road_type: RoadType,
+  traverse_type: TraverseType,
+  speed_limit: number, -- in m/s
+  lane_count: number,
+  lane_width: number,
+  radius: number
+}
+
+type Edge
+{
+  id: string,
+  traverse_type: TraverseType,
+  vertices: {
+    id: number, -- I believe this is the `node_index` for `GetConnectedEdges`
+    position: Vector3
+  }[2]
+}
