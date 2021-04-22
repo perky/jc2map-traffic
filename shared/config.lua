@@ -2,26 +2,31 @@ DEV_MODE = false
 
 CONFIG = {
     -- Server configs
-    max_virtual_vehicles = 500,
+    max_virtual_vehicles = 1000,
     stream_distance = 800,
     speed_multiplier = 0.8,
-    uphill_slower = 0.45,
+    uphill_slower = 0.55,
     default_top_speed = 30,
     stuck_check_distance = 1.5,
     stuck_check_interval = 3,
     create_new_vehicle_when_stolen = false,
+    turn_dot_to_slow = 0.25,
+    turn_slow_duration = 1.8,
+    turn_slow_ratio = 0.3,
+    turn_slow_distance = 25,
+    stop_duration = 2,
 
     -- Road speed limits
-    base_virtual_speed = 21,
-    highway_speed = 30,
-    rural_slow_speed = 15,
-    rural_fast_speed = 25,
+    base_virtual_speed = 19,
+    highway_speed = 28,
+    rural_slow_speed = 14,
+    rural_fast_speed = 22,
     
     -- Client configs
     max_client_dist_from_virtual = 110,
     debug_draw = 0,
     minimap_draw = 0,
-    turn_target_ahead = 5,
+    turn_target_ahead = 3,
     min_dist_to_turn = 0.5,
 
     -- PID values

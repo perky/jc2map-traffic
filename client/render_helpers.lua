@@ -4,9 +4,9 @@ function RenderWorldSpaceCircle(position, angle, radius, color, fill)
     transform:Rotate(angle)
     Render:SetTransform(transform)
     if fill then
-        Render:FillCircle(zero_vec, radius, color)
+        Render:FillCircle(Vector3.Zero, radius, color)
     else
-        Render:DrawCircle(zero_vec, radius, color)
+        Render:DrawCircle(Vector3.Zero, radius, color)
     end
     Render:ResetTransform()
 end
@@ -20,6 +20,6 @@ function RenderWorldSpaceText(position, text, font_size, color)
     transform:Rotate(text_angle)
     transform:Translate( -Vector3( text_size.x, text_size.y, 0 )/2 )
     Render:SetTransform(transform)
-    Render:DrawText(zero_vec, text, color, font_size)
+    Render:DrawText(Vector3.Zero, text, color, font_size)
     Render:ResetTransform()
 end

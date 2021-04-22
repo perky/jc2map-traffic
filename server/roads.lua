@@ -95,30 +95,34 @@ end
 
 --- Returns a random connected neighbor
 --- if a direction is specified it will not return a neighbor
---- from the opposite direction.
+--- from the opposite direction unless it can't find any valid adjacents
 function GetRandomRoadNeighbor(navmesh, node, direction, no_recurse)
     local candidates = {}
     for _, adj in ipairs(node.neighbours) do
         local adj_node = navmesh.map[adj.id]
         if adj_node then
-            local adj_pos = adj_node.position
-            local diff = (adj_pos - node.position)
+            local diff = (adj_node.position - node.position)
             local adj_direction = diff:Normalized()
             local dist_sqr = diff:LengthSqr()
             local max_dist = 2000
-            if (direction == nil or (Vector3.Dot(direction, adj_direction) > -0.4))
-            and dist_sqr < (max_dist*max_dist) 
-            then
-                table.insert(candidates, adj.id)
+            local dot = 1
+            if direction ~= nil then
+                dot = Vector3.Dot(direction, adj_direction)
+            end
+            if (dot > -0.1) and (dist_sqr < (max_dist*max_dist)) then
+                table.insert(candidates, {id = adj.id, dot = dot})
             end
         end
     end
     if #candidates == 1 then
-        return navmesh.map[candidates[1]]
+        local candidate = candidates[1]
+        return navmesh.map[candidate.id]
     elseif #candidates > 1 then
-        return navmesh.map[candidates[math.random(1, #candidates)]]
+        local candidate = candidates[math.random(1, #candidates)]
+        return navmesh.map[candidate.id]
     elseif direction ~= nil and (not no_recurse) then
-        return GetRandomRoadNeighbor(navmesh, node, direction * -1, true)
+        PrintIfNearPlayer("getting reverse node", node.position)
+        return GetRandomRoadNeighbor(navmesh, node, -direction, true)
     else
         return nil
     end
@@ -199,7 +203,7 @@ function GetLaneOffset(src_node, dst_node, desired_lane)
     local lane_width = lane_info.width
     local lane_mid = lane_width * 0.5
     if lane_info.count == 1 then
-        lane_mid = lane_width * 0.25
+        lane_mid = lane_width * 0.22
     end
     local right = Vector3.Cross(Vector3.Down, dir)
     

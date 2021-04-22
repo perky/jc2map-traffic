@@ -103,6 +103,7 @@ function Tick(args)
         if needed_new_nodes then
             entity:SetValue("road_id", node.id)
             entity:SetValue("next_road_id", next_node.id)
+            entity:SetValue("next_next_road_id", nil)
             entity:SetPosition(node.position)
         end
 
@@ -112,21 +113,42 @@ function Tick(args)
             CreateVehicle(entity, node)
         end
 
-        if vehicle:GetInvulnerable() then
-            vehicle:SetInvulnerable(false)
-        end
-
         local desired_lane = entity:GetValue("desired_lane")
         local lane_offset = GetLaneOffset(node, next_node, desired_lane)
         local src_pos = node.position + lane_offset
         local dst_pos = next_node.position + lane_offset
         local dir = (dst_pos - pos):Normalized()
 
-        if not IsWithinDistance(pos, dst_pos, 3) then
+        local slow_for_next_turn = entity:GetValue("slow_for_next_turn")
+        local arrive_dist = 3
+        if slow_for_next_turn then
+            arrive_dist = 10
+        end
+ 
+        if not IsWithinDistance(pos, dst_pos, arrive_dist) then
             local road_speed = GetRoadSpeed(node)
             local top_speed = entity:GetValue("top_speed")
             local uphill = 1 - (math.max(Vector3.Dot(Vector3.Up, dir), 0) * CONFIG.uphill_slower)
             local speed = math.min(road_speed * uphill, top_speed) * CONFIG.speed_multiplier
+            
+            local slow_time = entity:GetValue("slow_time")
+            if slow_time and Server:GetElapsedSeconds() > slow_time then
+                slow_time = false
+                entity:SetValue("slow_time", false)
+            end
+
+            if slow_for_next_turn or slow_time then
+                if IsWithinDistance(pos, dst_pos, CONFIG.turn_slow_distance) 
+                or IsWithinDistance(pos, src_pos, CONFIG.turn_slow_distance) then
+                    speed = speed * CONFIG.turn_slow_ratio
+                else
+                    entity:SetValue("slow_time", false)
+                    entity:SetNetworkValue("slow_for_next_turn", false)
+                    slow_time = false
+                    slow_for_next_turn = false
+                end
+            end
+
             entity:SetNetworkValue("speed", speed)
             entity:SetNetworkValue("direction", dir)
 
@@ -135,17 +157,63 @@ function Tick(args)
             entity:SetPosition(next_pos)
             vehicle:SetStreamPosition(next_pos + Vector3(0, 2, 0))
         else
-            local neighbour = GetRandomRoadNeighbor(navmesh, next_node, dir)
-            if neighbour then
+            -- If this was a slow turn, continue to be slow for little duration.
+            if slow_for_next_turn and not entity:GetValue("slow_time") then
+                entity:SetNetworkValue("slow_for_next_turn", false)
+                entity:SetValue("slow_time", Server:GetElapsedSeconds() + CONFIG.turn_slow_duration)
+            end
+            -- Get the next road node.
+            local last_dir = (dst_pos - src_pos):Normalized()
+            local next_neighbour_id = entity:GetValue("next_next_road_id")
+            local neighbour = nil
+            if next_neighbour_id then
+                neighbour = navmesh.map[next_neighbour_id]
+                entity:SetValue("next_next_road_id", nil)
+            else
+                neighbour = GetRandomRoadNeighbor(navmesh, next_node, last_dir)
+            end
+            if neighbour then   
                 entity:SetValue("road_id", next_node.id)
                 entity:SetValue("next_road_id", neighbour.id)
                 entity:SetPosition(dst_pos)
+                -- Look one node ahead to predict a turn.
+                -- TODO: refactor this for N node lookahead.
+                local new_dir = (neighbour.position - next_node.position):Normalized()
+                local next_neighbour = GetRandomRoadNeighbor(navmesh, neighbour, new_dir)
+                if next_neighbour then
+                    entity:SetValue("next_next_road_id", next_neighbour.id)
+                    -- if turn has a large radius then temporarily slow it down.
+                    local next_dir = (next_neighbour.position - neighbour.position):Normalized()
+                    local turn_dot = Vector3.Dot(next_dir, new_dir)
+                    if turn_dot <= CONFIG.turn_dot_to_slow then
+                        slow_for_next_turn = true
+                        entity:SetNetworkValue("slow_for_next_turn", true)
+                    end
+                end
             else
-                entity:SetValue("road_id", 0)
-                entity:SetValue("next_road_id", 0)
+                ClearVirtualVehicleNodes(entity)
+            end
+        end
+
+    end
+    
+    for vehicle in Server:GetVehicles() do
+        if IsValid(vehicle) and vehicle:GetValue("virtual_vehicle_id") ~= nil then
+            local id = vehicle:GetValue("virtual_vehicle_id")
+            local explode_time = vehicle:GetValue("explode_time")
+            if (vehicle:GetHealth() <= 0) or (explode_time and Server:GetElapsedSeconds() > explode_time) then
+                print("vehicle exploded")
+                RemoveVirtualVehicle(id)
+                vehicle:Remove()
             end
         end
     end
+end
+
+function ClearVirtualVehicleNodes(entity)
+    entity:SetValue("road_id", 0)
+    entity:SetValue("next_road_id", 0)
+    entity:SetValue("next_next_road_id", nil)
 end
 
 function OnVehicleInfo(vehicle_info)
@@ -177,14 +245,23 @@ function RemoveVirtualVehicle(id)
     end
 end
 
-function OnVehicleOutOfBounds(vehicle_id)
-    local vehicle = Vehicle.GetById(vehicle_id)
+function OnVehicleOutOfBounds(args)
+    local vehicle = Vehicle.GetById(args.vehicle_id)
     if IsValid(vehicle) then
         local virtual_vehicle_id = vehicle:GetValue("virtual_vehicle_id")
-        vehicle:Remove()
-        RemoveVirtualVehicle(virtual_vehicle_id)
-        local node = GetRandomRoadNode(navmesh)
-        local new_entity = CreateVirtualVehicle(node)
+        if virtual_vehicle_id then
+            local virtual_vehicle = WorldNetworkObject.GetById(virtual_vehicle_id)
+            if virtual_vehicle then
+                local top_speed = virtual_vehicle:GetValue("top_speed")
+                top_speed = math.max(5, top_speed - 3)
+                if top_speed <= 5 then
+                    RemoveVirtualVehicle(virtual_vehicle_id)
+                else
+                    virtual_vehicle:SetValue("top_speed", top_speed)
+                    virtual_vehicle:SetValue("slow_time", Server:GetElapsedSeconds() + CONFIG.stop_duration)
+                end
+            end
+        end
     end
 end
 
@@ -195,7 +272,37 @@ function PlayerEnterVehicle(args)
     end
 end
 
+function OnDamageTrafficVehicle(args)
+    local vehicle = Vehicle.GetById(args.vehicle_id)
+    if IsValid(vehicle) then
+        local health = vehicle:GetHealth()
+        health = math.max(0, health - args.damage)
+        vehicle:SetHealth(health)
+        if health <= 0.2 then
+            vehicle:SetValue("explode_time", Server:GetElapsedSeconds() + 20)
+            local virtual_vehicle_id = vehicle:GetValue("virtual_vehicle_id")
+            if virtual_vehicle_id then
+                RemoveVirtualVehicle(virtual_vehicle_id)
+            end
+        end
+    end
+end
+
+function PrintIfNearPlayer(msg, pos)
+    local is_near = false
+    for player in Server:GetPlayers() do
+        if IsWithinDistance(player:GetPosition(), pos, 35) then
+            is_near = true
+            break
+        end
+    end
+    if is_near then
+        print(msg)
+    end
+end
+
 Events:Subscribe("ModuleLoad", ModuleLoad)
 Events:Subscribe("ModuleUnload", ModuleUnload)
 Network:Subscribe("VehicleInfo", OnVehicleInfo)
 Network:Subscribe("VehicleOutOfBounds", OnVehicleOutOfBounds)
+Network:Subscribe("DamageTrafficVehicle", OnDamageTrafficVehicle)

@@ -10,9 +10,13 @@ function RenderDebugInfo(args)
     for id, virtual_vehicle in pairs(virtual_vehicles) do
         local obj = WorldNetworkObject.GetById(virtual_vehicle.object_id)
         local pos = obj:GetPosition() + Vector3(0, 1.0, 0)
-        if IsWithinDistance(pos, LocalPlayer:GetPosition(), 400) then 
-            RenderWorldSpaceCircle(pos, flat_angle, 0.5, Color.Red, true)
-            Render:DrawLine(pos, pos + virtual_vehicle.velocity, Color.Red)
+        if IsWithinDistance(pos, LocalPlayer:GetPosition(), 400) then
+            local col = Color.Red
+            if obj:GetValue("slow_for_next_turn") == true then
+                col = Color.Yellow
+            end
+            RenderWorldSpaceCircle(pos, flat_angle, 0.5, col, true)
+            Render:DrawLine(pos, pos + virtual_vehicle.velocity, col)
         end
     end
     
@@ -55,8 +59,8 @@ function OnPostTick(args)
         local object = WorldNetworkObject.GetById(virtual_vehicle.object_id)
         if object then
             virtual_vehicle.position = object:GetPosition()
-            virtual_vehicle.direction = object:GetValue("direction")
-            virtual_vehicle.speed = object:GetValue("speed")
+            virtual_vehicle.direction = object:GetValue("direction") or Vector3.Zero
+            virtual_vehicle.speed = object:GetValue("speed") or 1
             virtual_vehicle.velocity = virtual_vehicle.direction * virtual_vehicle.speed
         end
     end
@@ -133,10 +137,12 @@ function OnPostTick(args)
                 -- teleport to target position if too far away
                 vehicle:SetPosition(target_pos + Vector3(0, 2.5, 0))
                 vehicle:SetAngle(Angle.FromVectors(Vector3.Forward, virtual_vehicle.direction))
-                vehicle:SetLinearVelocity(virtual_vehicle.direction * virtual_vehicle.speed)
+                vehicle:SetLinearVelocity(Vector3.Zero)
+                --vehicle:SetLinearVelocity(virtual_vehicle.direction * virtual_vehicle.speed)
                 virtual_vehicle.pos_pid = MakePIDState()
                 virtual_vehicle.speed_pid = MakePIDState()
                 virtual_vehicle.turn_pid = MakePIDState()
+                Network:Send("VehicleOutOfBounds", {vehicle_id = vehicle:GetId()})
             else
                 -- This is the meat of the NPC traffic logic right here.
                 local pos_correction = CalcPID(virtual_vehicle.pos_pid, 
@@ -148,9 +154,13 @@ function OnPostTick(args)
                 if is_ahead then
                     pos_correction = pos_correction * -1
                 end
+                local speed_offset = 0.7
+                if virtual_vehicle_object:GetValue("slow_for_next_turn") == true then
+                    speed_offset = -2
+                end
                 local speed_correction = CalcPID(virtual_vehicle.speed_pid, 
                                                  speed_pid_vals, 
-                                                 (virtual_vehicle.speed + 0.7 + pos_correction), 
+                                                 (virtual_vehicle.speed + speed_offset + pos_correction), 
                                                  vehicle:GetLinearVelocity():Length(), 
                                                  dt)
                 local accelerate_amount = speed_correction
@@ -168,12 +178,15 @@ function OnPostTick(args)
                 local target_heading = WrapRadianToDegrees(target_angle.yaw)
                 local delta_yaw = DegreesDifference(vehicle_heading, target_heading)
                 local turn_amount = CalcPID(virtual_vehicle.turn_pid, turn_pid_vals, 0, delta_yaw, dt)
+                if virtual_vehicle_object:GetValue("slow_for_next_turn") then
+                    turn_amount = turn_amount * 1.25
+                end
                 if math.abs(delta_yaw) > 0 and dist >= CONFIG.min_dist_to_turn then
                     local turn_action = Action.TurnLeft
                     if delta_yaw > 0 then
                         turn_action = Action.TurnRight
                     end
-                    npc:SetInput(turn_action, math.abs(turn_amount))
+                    npc:SetInput(turn_action, math.clamp(math.abs(turn_amount), 0, 1))
                 end
                 -- End meatiness.
 
@@ -205,6 +218,79 @@ function PlayerEnterVehicle(args)
     end
 end
 
+function EntityBulletHit(args)
+    if not args.entity then return end
+    local vehicle = args.entity:GetVehicle()
+    if vehicle then
+        local virtual_id = vehicle:GetValue("virtual_vehicle_id")
+        if virtual_id then
+            print("sending DamageTrafficVehicle, damage: " .. tostring(args.damage))
+            Network:Send("DamageTrafficVehicle", {
+                vehicle_id = vehicle:GetId(),
+                virtual_id = virtual_id,
+                damage = args.damage
+            })
+        end
+    end
+end
+
+function InputPoll(args)
+    if Input:GetValue(Action.SwitchWeapon) > 0 
+    or Input:GetValue(Action.NextWeapon) > 0 
+    or Input:GetValue(Action.PrevWeapon) > 0
+    or Input:GetValue(Action.EquipLeftSlot) > 0 
+    or Input:GetValue(Action.EquipRightSlot) > 0 
+    or Input:GetValue(Action.EquipTwohanded) > 0 then
+        local local_weapon = LocalPlayer:GetEquippedWeapon()
+        if local_weapon then
+            local ammo = local_weapon.ammo_clip
+            LocalPlayer:SetValue("traffic_last_ammo", ammo)
+        end
+    end
+
+    local is_driver = (IsValid(LocalPlayer:GetVehicle()) and LocalPlayer:GetSeat() == VehicleSeat.Driver)
+    
+    if (Input:GetValue(Action.Accelerate) > 0 or Input:GetValue(Action.McFire) > 0 or Input:GetValue(Action.Fire) > 0) and not is_driver then
+        -- Handle player shooting
+        local local_weapon = LocalPlayer:GetEquippedWeapon()
+        if local_weapon then
+            local last_ammo = LocalPlayer:GetValue("traffic_last_ammo")
+            if not last_ammo then
+                last_ammo = 0
+            end
+            local ammo = local_weapon.ammo_clip
+            LocalPlayer:SetValue("traffic_last_ammo", ammo)
+            if ammo < last_ammo then
+                local aim_target = LocalPlayer:GetAimTarget()
+                if aim_target and IsValid(aim_target.entity) and aim_target.entity.__type == "Vehicle" then
+                    local virtual_id = aim_target.entity:GetValue("virtual_vehicle_id")
+                    if virtual_id then
+                        Network:Send("DamageTrafficVehicle", {
+                            vehicle_id = aim_target.entity:GetId(),
+                            virtual_id = virtual_id,
+                            damage = 0.33
+                        })
+                    end
+                end
+            end
+        end
+    end
+    
+    if (Input:GetValue(Action.VehicleFireLeft) > 0 or Input:GetValue(Action.VehicleFireRight) > 0) and is_driver then
+        local aim_target = LocalPlayer:GetAimTarget()
+        if aim_target and IsValid(aim_target.entity) and aim_target.entity.__type == "Vehicle" then
+            local virtual_id = aim_target.entity:GetValue("virtual_vehicle_id")
+            if virtual_id then
+                Network:Send("DamageTrafficVehicle", {
+                    vehicle_id = aim_target.entity:GetId(),
+                    virtual_id = virtual_id,
+                    damage = 0.01
+                })
+            end
+        end
+    end
+end
+
 function OnVirtualVehicleStreamIn(id, object)
     local npc = ClientActor.Create(AssetLocation.Game, {
         model_id = 1,
@@ -222,6 +308,7 @@ function OnVirtualVehicleStreamIn(id, object)
         turn_pid = MakePIDState(),
         npc_id = npc:GetId()
     }
+    
 end
 
 function OnVirtualVehicleStreamOut(id, object)
@@ -256,6 +343,8 @@ function TrafficModuleLoad()
     Events:Subscribe("PlayerEnterVehicle", PlayerEnterVehicle)
     Events:Subscribe("LocalPlayerEnterVehicle", PlayerEnterVehicle)
     Events:Subscribe("LocalPlayerChat", LocalPlayerChat)
+    Events:Subscribe("EntityBulletHit", EntityBulletHit)
+    Events:Subscribe("InputPoll", InputPoll)
     Events:Subscribe("WorldNetworkObjectCreate", function(args)
         if args.object:GetValue("type") == "virtual_vehicle" then
             local id = args.object:GetId()
